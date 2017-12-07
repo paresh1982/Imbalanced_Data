@@ -250,91 +250,73 @@ num_train[,income_level := NULL]
 d_train <- cbind(num_train,cat_train)
 d_test <- cbind(num_test,cat_test)
 
-dtrain <- as.data.frame(sapply(d_train, as.numeric))
-dtest <- as.data.frame(sapply(d_test, as.numeric))
-
 #remove unwanted files
 rm(num_train,num_test,cat_train,cat_test) #save memory
 
-tar_test <- dtest$income_level
-tar_test_1 <- ifelse(tar_test == "1",0,1)
+#using one hot encoding
+tr_labels <- d_train$income_level
+ts_labels <- d_test$income_level
 
-dtrain$income_level <- NULL
-dtest$income_level <- NULL
+new_tr <- model.matrix(~.+0,data = d_train[,-c("income_level"),with=F])
+new_ts <- model.matrix(~.+0,data = d_test[,-c("income_level"),with=F])
 
-library(funModeling)
-library(Matrix)
+#convert factor to numeric
+tr_labels <- as.numeric(tr_labels)-1
+ts_labels <- as.numeric(ts_labels)-1
+
 library(xgboost)
 
-trainSparse <- sparse.model.matrix(~.,data=dtrain)
-testSparse <- sparse.model.matrix(~.,data=dtest)
+dtrain <- xgb.DMatrix(data = new_tr,label = tr_labels) 
+dtest <- xgb.DMatrix(data = new_ts,label= ts_labels)
 
-common <- intersect(colnames(trainSparse),colnames(testSparse))
-trainSparse <- trainSparse[,common]
-testSparse <- testSparse[,common]
+params <- list(booster = "gbtree", 
+               objective = "binary:logistic", 
+               eta=0.3, gamma=0, max_depth=6, 
+               min_child_weight=1, subsample=1, 
+               colsample_bytree=1)
 
-dtrain <- xgb.DMatrix(data = trainSparse, label = target_1)
-dtest <- xgb.DMatrix(data = testSparse)
+xgbcv <- xgb.cv( params = params, 
+                 data = dtrain, nrounds = 100, 
+                 nfold = 5, showsd = T, 
+                 stratified = T, print.every.n = 10,
+                 early.stop.round = 20, maximize = F)
 
 
-max.depth = 6.0000	
-min_child_weight = 1.0000	
-subsample = 0.7742	
-lambda = 0.2568	
-alpha = 0.9799	
-gamma = 5.0000	
-colsample = 0.6696	
+xgb1 <- xgb.train (params = params, 
+                   data = dtrain, nrounds = 100, 
+                   watchlist = list(val=dtest,train=dtrain), 
+                   print.every.n = 10, 
+                   early.stop.round = 10, 
+                   maximize = F , eval_metric = "error")
 
-optimal_round <- 2100
-model <- xgb.train(params = list(booster = "gbtree", 
-                                 eta = 0.01,
-                                 max_depth = max.depth,
-                                 min_child_weight = min_child_weight,
-                                 subsample = subsample, 
-                                 colsample_bytree = colsample,
-                                 objective = "binary:logistic",
-                                 eval_metric = "auc"),
-                   data = dtrain, 
-                   nround = optimal_round,
-                   maximize = TRUE,
-                   lambda = lambda,
-                   gamma = gamma,
-                   alpha = alpha,
-                   nthread = 10,
-                   verbose = TRUE,
-                   tree_method = 'auto'
-)
+xgbpred <- predict (xgb1,dtest)
+xgbpred_bi <- ifelse (xgbpred > 0.5,1,0)
 
-pred <- predict(model,dtest)
+library(caret)
+pred_CM <- confusionMatrix(xgbpred_bi, ts_labels)
 
-# Threshold as 0.5
-pred_1 <- ifelse(pred > 0.5, 1, 0)
+mat <- xgb.importance (feature_names = colnames(new_tr),model = xgb1)
+xgb.plot.importance (importance_matrix = mat[1:20]) 
 
-#make confusion matrix
-pred_CM <- confusionMatrix(tar_test_1, pred_1)
-
-#Accuracy : 0.9475
-#Sensitivity : 0.9574
-#Specificity : 0.6489
 
 # Print 
 pred_CM$byClass
 
+#Accuracy : 0.9485
+#Sensitivity : 0.9877
+#Specificity : 0.3555
+
+
 # Precision
-(precision <- pred_CM$byClass["Pos Pred Value"])
-#0.9880204
+(precision <- pred_CM$byClass["Precision"])
+#0.9586458
 
 # Recall
 (recall <- pred_CM$byClass["Sensitivity"])
-#0.9573983
+#0.9876892
 
-f_measure <- 2*((precision*recall)/(precision+recall))
-
-f_measure
-#0.9724684
-
-
-
+(f_measure <- 2*((precision*recall)/(precision+recall)))
+#0.9729508
 
 
 
